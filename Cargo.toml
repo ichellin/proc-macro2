@@ -30,6 +30,7 @@ rustversion = "1"
 [features]
 proc-macro = []
 default = ["proc-macro"]
+tokenize_comments = []
 
 # Expose methods Span::start and Span::end which give the line/column location
 # of a token.

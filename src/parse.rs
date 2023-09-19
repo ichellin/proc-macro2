@@ -84,6 +84,8 @@ fn skip_whitespace(input: Cursor) -> Cursor {
                 && (!s.starts_with("///") || s.starts_with("////"))
                 && !s.starts_with("//!")
             {
+                #[cfg(feature = "tokenize_comments")] 
+                return s;
                 let (cursor, _) = take_until_newline_or_eof(s);
                 s = cursor;
                 continue;
@@ -94,7 +96,9 @@ fn skip_whitespace(input: Cursor) -> Cursor {
                 && (!s.starts_with("/**") || s.starts_with("/***"))
                 && !s.starts_with("/*!")
             {
-                match block_comment(s) {
+                #[cfg(feature = "tokenize_comments")] 
+                return s;
+                match block_comment(s) {  
                     Ok((rest, _)) => {
                         s = rest;
                         continue;
@@ -123,6 +127,7 @@ fn skip_whitespace(input: Cursor) -> Cursor {
 }
 
 fn block_comment(input: Cursor) -> PResult<&str> {
+
     if !input.starts_with("/*") {
         return Err(Reject);
     }
@@ -168,7 +173,7 @@ pub(crate) fn token_stream(mut input: Cursor) -> Result<TokenStream, LexError> {
     loop {
         input = skip_whitespace(input);
 
-        if let Ok((rest, ())) = doc_comment(input, &mut trees) {
+        if let Ok((rest, ())) = comment(input, &mut trees) {
             input = rest;
             continue;
         }
@@ -876,7 +881,7 @@ fn punct(input: Cursor) -> PResult<Punct> {
 }
 
 fn punct_char(input: Cursor) -> PResult<char> {
-    if input.starts_with("//") || input.starts_with("/*") {
+    if input.starts_with("//") || input.starts_with("/*") {   // Tokenize comment here?
         // Do not accept `/` of a comment as a punct.
         return Err(Reject);
     }
@@ -896,10 +901,10 @@ fn punct_char(input: Cursor) -> PResult<char> {
     }
 }
 
-fn doc_comment<'a>(input: Cursor<'a>, trees: &mut TokenStreamBuilder) -> PResult<'a, ()> {
+fn comment<'a>(input: Cursor<'a>, trees: &mut TokenStreamBuilder) -> PResult<'a, ()> {
     #[cfg(span_locations)]
     let lo = input.off;
-    let (rest, (comment, inner)) = doc_comment_contents(input)?;
+    let (rest, (comment, inner, is_doc)) = comment_contents(input)?;
     let span = crate::Span::_new_fallback(Span {
         #[cfg(span_locations)]
         lo,
@@ -919,20 +924,20 @@ fn doc_comment<'a>(input: Cursor<'a>, trees: &mut TokenStreamBuilder) -> PResult
     let mut pound = Punct::new('#', Spacing::Alone);
     pound.set_span(span);
     trees.push_token_from_parser(TokenTree::Punct(pound));
-
+   
     if inner {
         let mut bang = Punct::new('!', Spacing::Alone);
         bang.set_span(span);
         trees.push_token_from_parser(TokenTree::Punct(bang));
     }
 
-    let doc_ident = crate::Ident::new("doc", span);
+    let ident = if is_doc { crate::Ident::new("doc", span) } else { crate::Ident::new("comment", span)};
     let mut equal = Punct::new('=', Spacing::Alone);
     equal.set_span(span);
     let mut literal = crate::Literal::string(comment);
     literal.set_span(span);
     let mut bracketed = TokenStreamBuilder::with_capacity(3);
-    bracketed.push_token_from_parser(TokenTree::Ident(doc_ident));
+    bracketed.push_token_from_parser(TokenTree::Ident(ident));
     bracketed.push_token_from_parser(TokenTree::Punct(equal));
     bracketed.push_token_from_parser(TokenTree::Literal(literal));
     let group = Group::new(Delimiter::Bracket, bracketed.build());
@@ -943,24 +948,49 @@ fn doc_comment<'a>(input: Cursor<'a>, trees: &mut TokenStreamBuilder) -> PResult
     Ok((rest, ()))
 }
 
-fn doc_comment_contents(input: Cursor) -> PResult<(&str, bool)> {
-    if input.starts_with("//!") {
+fn comment_contents(input: Cursor) -> PResult<(&str, bool, bool)> { 
+    if input.starts_with("//!") { // Doc Inner Line
         let input = input.advance(3);
         let (input, s) = take_until_newline_or_eof(input);
-        Ok((input, (s, true)))
-    } else if input.starts_with("/*!") {
-        let (input, s) = block_comment(input)?;
-        Ok((input, (&s[3..s.len() - 2], true)))
-    } else if input.starts_with("///") {
-        let input = input.advance(3);
-        if input.starts_with_char('/') {
-            return Err(Reject);
+        return Ok((input, (s, true, true)))
+    } 
+    else if input.starts_with("//") { // Line Comments
+        #[cfg(feature = "tokenize_comments")] 
+        {
+            let input = input.advance(2);
+            if input.starts_with("//") { // line comments
+                let input = input.advance(2);
+                let (input, s) = take_until_newline_or_eof(input);
+                return Ok((input, (s, false, false)));
+            } else if input.starts_with("/") { // Doc outer line comments
+                let input = input.advance(1);
+                let (input, s) = take_until_newline_or_eof(input);
+                return Ok((input, (s, false, true))); 
+            }
+            let (input, s) = take_until_newline_or_eof(input);
+            return Ok((input, (s, false, false)))
         }
-        let (input, s) = take_until_newline_or_eof(input);
-        Ok((input, (s, false)))
+        Err(Reject)
+    } else if input.starts_with("/*!") { // Doc Inner Block
+        let (input, s) = block_comment(input)?;
+        Ok((input, (&s[3..s.len() - 2], true, true)))
+    } else if input.starts_with("///") { // Doc Outer Line
+        #[cfg(not(feature = "tokenize_comments"))] 
+        {
+            let input = input.advance(3);
+            if input.starts_with_char('/') {
+                return Err(Reject); // Line Comments that is ////
+            }
+            let (input, s) = take_until_newline_or_eof(input);
+            return Ok((input, (s, false, true)));
+        }
+        Err(Reject)
     } else if input.starts_with("/**") && !input.rest[3..].starts_with('*') {
         let (input, s) = block_comment(input)?;
-        Ok((input, (&s[3..s.len() - 2], false)))
+        Ok((input, (&s[3..s.len() - 2], false, true))) // Doc Outer Block Comments
+    }  else if input.starts_with("/*")  {
+        let (input, s) = block_comment(input)?;
+        Ok((input, (&s[2..s.len() - 2], false, false))) //  Block Comments
     } else {
         Err(Reject)
     }
