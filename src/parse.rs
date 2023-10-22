@@ -86,9 +86,13 @@ fn skip_whitespace(input: Cursor) -> Cursor {
             {
                 #[cfg(feature = "tokenize_comments")] 
                 return s;
-                let (cursor, _) = take_until_newline_or_eof(s);
-                s = cursor;
-                continue;
+
+                #[cfg(not(feature = "tokenize_comments"))] 
+                {
+                    let (cursor, _) = take_until_newline_or_eof(s);
+                    s = cursor;
+                    continue;
+                }
             } else if s.starts_with("/**/") {
                 s = s.advance(4);
                 continue;
@@ -98,6 +102,7 @@ fn skip_whitespace(input: Cursor) -> Cursor {
             {
                 #[cfg(feature = "tokenize_comments")] 
                 return s;
+                #[cfg(not(feature = "tokenize_comments"))] 
                 match block_comment(s) {  
                     Ok((rest, _)) => {
                         s = rest;
@@ -970,6 +975,7 @@ fn comment_contents(input: Cursor) -> PResult<(&str, bool, bool)> {
             let (input, s) = take_until_newline_or_eof(input);
             return Ok((input, (s, false, false)))
         }
+        #[cfg(not(feature = "tokenize_comments"))] 
         Err(Reject)
     } else if input.starts_with("/*!") { // Doc Inner Block
         let (input, s) = block_comment(input)?;
@@ -984,6 +990,7 @@ fn comment_contents(input: Cursor) -> PResult<(&str, bool, bool)> {
             let (input, s) = take_until_newline_or_eof(input);
             return Ok((input, (s, false, true)));
         }
+        #[cfg(feature = "tokenize_comments")] 
         Err(Reject)
     } else if input.starts_with("/**") && !input.rest[3..].starts_with('*') {
         let (input, s) = block_comment(input)?;
